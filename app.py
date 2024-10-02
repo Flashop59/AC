@@ -10,7 +10,6 @@ from geopy.distance import geodesic
 import requests
 from datetime import datetime, timedelta
 import os
-from streamlit_folium import st_folium  # Import the necessary module for Folium map rendering
 
 # Function to fetch data from the API
 def fetch_data(vehicle, start_time, end_time):
@@ -58,6 +57,22 @@ def generate_more_hull_points(points, num_splits=3):
             intermediate_point = start_point + j * (end_point - start_point) / num_splits
             new_points.append(intermediate_point)
     return np.array(new_points)
+
+# Function to generate a Google Maps link for the latest location
+def get_latest_location_link(data):
+    if not data:
+        st.error("No data available to generate a location link.")
+        return None
+    
+    # Extract the latest GPS point (last in the sorted list)
+    latest_point = data[-1]
+    lat = latest_point['lat']
+    lon = latest_point['lon']
+    
+    # Generate a Google Maps link for navigation
+    gmap_link = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+    
+    return gmap_link
 
 # Function to process the fetched data and return the map and field areas
 def process_data(data, show_hull_points):
@@ -220,14 +235,6 @@ def process_data(data, show_hull_points):
 
     return m, combined_df, total_area, total_time, total_travel_distance, total_travel_time
 
-# Function to get the latest machine location
-def get_latest_location(data):
-    if not data:
-        return None, None
-    latest_point = data[-1]
-    lat, lon = latest_point['lat'], latest_point['lon']
-    return lat, lon
-
 # Streamlit app
 def main():
     st.title("Field Data Visualization")
@@ -248,53 +255,38 @@ def main():
         data = fetch_data(vehicle, start_time, end_time)
 
         if data:
-            # Tabbed view
-            tab1, tab2 = st.tabs(["Field Visualization", "Latest Location"])
+            map_obj, field_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(data, show_hull_points)
             
-            # First Tab: Field Visualization
-            with tab1:
-                map_obj, field_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(data, show_hull_points)
-                
-                # Display the map
-                st_folium(map_obj, width=700, height=500)
+            # Display the map
+            st.components.v1.html(map_obj._repr_html_(), height=600)
 
-                # Display the DataFrame and totals
-                st.write(field_df)
-                
-                st.write(f"\nTotal Area (Gunthas): {total_area}")
-                st.write(f"Total Time (Minutes): {total_time}")
-                st.write(f"Total Travel Distance (km): {total_travel_distance}")
-                st.write(f"Total Travel Time (minutes): {total_travel_time}")
-                
-                # Add a download button for the map
-                map_filename = f"{vehicle}_map_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.html"
-                map_obj.save(map_filename)
-                with open(map_filename, "rb") as file:
-                    btn = st.download_button(
-                        label="Download Map as HTML",
-                        data=file,
-                        file_name=map_filename,
-                        mime="text/html"
-                    )
-                
-                # Clean up the file after download
-                if btn:
-                    os.remove(map_filename)
+            # Display the DataFrame and totals
+            st.write(field_df)
             
-            # Second Tab: Latest Location
-            with tab2:
-                latest_lat, latest_lon = get_latest_location(data)
-                if latest_lat is not None and latest_lon is not None:
-                    # Display map with the latest location
-                    latest_map = folium.Map(location=[latest_lat, latest_lon], zoom_start=15)
-                    folium.Marker([latest_lat, latest_lon], popup="Latest Location", icon=folium.Icon(color="blue")).add_to(latest_map)
-                    st_folium(latest_map, width=700, height=500)
-                    
-                    # Display navigation link using Google Maps
-                    navigation_url = f"https://www.google.com/maps/dir/?api=1&destination={latest_lat},{latest_lon}"
-                    st.write(f"[Navigate to Latest Location](https://www.google.com/maps/dir/?api=1&destination={latest_lat},{latest_lon})")
-                else:
-                    st.write("No latest location available.")
-                    
+            st.write(f"\nTotal Area (Gunthas): {total_area}")
+            st.write(f"Total Time (Minutes): {total_time}")
+            st.write(f"Total Travel Distance (km): {total_travel_distance}")
+            st.write(f"Total Travel Time (minutes): {total_travel_time}")
+            
+            # Show the latest location Google Maps link
+            gmap_link = get_latest_location_link(data)
+            if gmap_link:
+                st.write(f"[Navigate to Latest Location]({gmap_link})")
+            
+            # Add a download button for the map
+            map_filename = f"{vehicle}_map_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.html"
+            map_obj.save(map_filename)
+            with open(map_filename, "rb") as file:
+                btn = st.download_button(
+                    label="Download Map as HTML",
+                    data=file,
+                    file_name=map_filename,
+                    mime="text/html"
+                )
+            
+            # Clean up the file after download
+            if btn:
+                os.remove(map_filename)
+
 if __name__ == "__main__":
     main()
