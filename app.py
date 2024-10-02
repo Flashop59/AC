@@ -11,8 +11,8 @@ import requests
 from datetime import datetime, timedelta
 import os
 
-# Function to fetch data from the API
-def fetch_data(vehicle, start_time, end_time):
+# Function to fetch data from the API for a specific time interval
+def fetch_data_interval(vehicle, start_time, end_time):
     API_KEY = "3330d953-7abc-4bac-b862-ac315c8e2387-6252fa58-d2c2-4c13-b23e-59cefafa4d7d"
     url = f"https://admintestapi.ensuresystem.in/api/locationpull/orbit?vehicle={vehicle}&from={start_time}&to={end_time}"
     headers = {"token": API_KEY}
@@ -29,6 +29,21 @@ def fetch_data(vehicle, start_time, end_time):
     
     # Sort data by time
     data.sort(key=lambda x: x['time'])
+    return data
+
+# Function to fetch data for multiple days by splitting into intervals of 34 hours
+def fetch_data(vehicle, start_time, end_time):
+    data = []
+    max_interval = timedelta(hours=34)  # 34-hour interval limitation
+    
+    while start_time < end_time:
+        next_end_time = min(start_time + max_interval, end_time)
+        interval_data = fetch_data_interval(vehicle, int(start_time.timestamp() * 1000), int(next_end_time.timestamp() * 1000))
+        if interval_data:
+            data.extend(interval_data)
+        
+        start_time = next_end_time
+    
     return data
 
 # Function to calculate the area of a field in square meters using convex hull
@@ -233,8 +248,8 @@ def main():
     
     if st.button("Fetch Data and Process"):
         # Convert start_date and end_date to datetime.datetime objects
-        start_time = int(datetime.combine(start_date, datetime.min.time()).timestamp() * 1000)
-        end_time = int(datetime.combine(end_date, datetime.min.time()).timestamp() * 1000)
+        start_time = datetime.combine(start_date, datetime.min.time())
+        end_time = datetime.combine(end_date, datetime.min.time())
 
         data = fetch_data(vehicle, start_time, end_time)
 
