@@ -9,7 +9,7 @@ from folium import plugins
 from geopy.distance import geodesic
 import requests
 from datetime import datetime, timedelta
-import time
+import os
 
 # Function to fetch data from the API
 def fetch_data(vehicle, start_time, end_time):
@@ -58,66 +58,214 @@ def generate_more_hull_points(points, num_splits=3):
             new_points.append(intermediate_point)
     return np.array(new_points)
 
-# Function to generate a Google Maps link for the latest location
-def get_latest_location_link(lat, lon):
-    # Generate a Google Maps link for navigation
-    gmap_link = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-    return gmap_link
-
-# Function to fetch real-time data from the API
-def fetch_latest_data(vehicle):
-    API_KEY = "3330d953-7abc-4bac-b862-ac315c8e2387-6252fa58-d2c2-4c13-b23e-59cefafa4d7d"
-    end_time = int(datetime.now().timestamp() * 1000)  # Current timestamp in milliseconds
-    start_time = end_time - (60 * 1000)  # Fetch data from the last minute
+# Function to process the fetched data and return the map and field areas
+def process_data(data, show_hull_points):
+    # Create a DataFrame from the fetched data
+    gps_data = pd.DataFrame(data)
+    gps_data['Timestamp'] = pd.to_datetime(gps_data['time'], unit='ms')
+    gps_data['lat'] = gps_data['lat']
+    gps_data['lng'] = gps_data['lon']
     
-    url = f"https://admintestapi.ensuresystem.in/api/locationpull/orbit?vehicle={vehicle}&from={start_time}&to={end_time}"
-    headers = {"token": API_KEY}
-    
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        st.error(f"Error fetching data: {response.status_code}")
-        return None
+    # Cluster the GPS points to identify separate fields
+    coords = gps_data[['lat', 'lng']].values
+    db = DBSCAN(eps=0.0001, min_samples=11).fit(coords)
+    labels = db.labels_
 
-    data = response.json()
-    if not isinstance(data, list) or not data:
-        st.error("No real-time data available.")
-        return None
-    
-    # Sort data by time and return the most recent data point
-    data.sort(key=lambda x: x['time'])
-    latest_point = data[-1]  # Latest location data point
-    return latest_point
+    # Add labels to the data
+    gps_data['field_id'] = labels
 
-# Streamlit app for real-time location tracking
+    # Calculate the area for each field
+    fields = gps_data[gps_data['field_id'] != -1]  # Exclude noise points
+    field_areas = fields.groupby('field_id').apply(
+        lambda df: calculate_convex_hull_area(df[['lat', 'lng']].values))
+
+    # Convert the area from square degrees to square meters (approximation)
+    field_areas_m2 = field_areas * 0.77 * (111000 ** 2)  # rough approximation
+
+    # Convert the area from square meters to gunthas (1 guntha = 101.17 m^2)
+    field_areas_gunthas = field_areas_m2 / 101.17
+
+    # Calculate time metrics for each field
+    field_times = fields.groupby('field_id').apply(
+        lambda df: (df['Timestamp'].max() - df['Timestamp'].min()).total_seconds() / 60.0
+    )
+
+    # Extract start and end dates for each field
+    field_dates = fields.groupby('field_id').agg(
+        start_date=('Timestamp', 'min'),
+        end_date=('Timestamp', 'max')
+    )
+
+    # Filter out fields with area less than 5 gunthas
+    valid_fields = field_areas_gunthas[field_areas_gunthas >= 5].index
+    field_areas_gunthas = field_areas_gunthas[valid_fields]
+    field_times = field_times[valid_fields]
+    field_dates = field_dates.loc[valid_fields]
+
+    # Calculate centroids of each field
+    centroids = fields.groupby('field_id').apply(
+        lambda df: calculate_centroid(df[['lat', 'lng']].values)
+    )
+
+    # Calculate traveling distance and time between field centroids
+    travel_distances = []
+    travel_times = []
+    field_ids = list(valid_fields)
+    
+    if len(field_ids) > 1:
+        for i in range(len(field_ids) - 1):
+            centroid1 = centroids.loc[field_ids[i]]
+            centroid2 = centroids.loc[field_ids[i + 1]]
+            distance = geodesic(centroid1, centroid2).kilometers
+            time = (field_dates.loc[field_ids[i + 1], 'start_date'] - field_dates.loc[field_ids[i], 'end_date']).total_seconds() / 60.0
+            travel_distances.append(distance)
+            travel_times.append(time)
+
+        # Calculate distance from last point of one field to first point of the next field
+        for i in range(len(field_ids) - 1):
+            end_point = fields[fields['field_id'] == field_ids[i]][['lat', 'lng']].values[-1]
+            start_point = fields[fields['field_id'] == field_ids[i + 1]][['lat', 'lng']].values[0]
+            distance = geodesic(end_point, start_point).kilometers
+            time = (field_dates.loc[field_ids[i + 1], 'start_date'] - field_dates.loc[field_ids[i], 'end_date']).total_seconds() / 60.0
+            travel_distances.append(distance)
+            travel_times.append(time)
+
+        # Append NaN for the last field
+        travel_distances.append(np.nan)
+        travel_times.append(np.nan)
+    else:
+        travel_distances.append(np.nan)
+        travel_times.append(np.nan)
+
+    # Ensure lengths match for DataFrame
+    if len(travel_distances) != len(field_areas_gunthas):
+        travel_distances = travel_distances[:len(field_areas_gunthas)]
+        travel_times = travel_times[:len(field_areas_gunthas)]
+
+    # Combine area, time, dates, and travel metrics into a single DataFrame
+    combined_df = pd.DataFrame({
+        'Field ID': field_areas_gunthas.index,
+        'Area (Gunthas)': field_areas_gunthas.values,
+        'Time (Minutes)': field_times.values,
+        'Start Date': field_dates['start_date'].values,
+        'End Date': field_dates['end_date'].values,
+        'Travel Distance to Next Field (km)': travel_distances,
+        'Travel Time to Next Field (minutes)': travel_times
+    })
+    
+    # Calculate total metrics
+    total_area = field_areas_gunthas.sum()
+    total_time = field_times.sum()
+    total_travel_distance = np.nansum(travel_distances)
+    total_travel_time = np.nansum(travel_times)
+
+    # Create a satellite map
+    map_center = [gps_data['lat'].mean(), gps_data['lng'].mean()]
+    m = folium.Map(location=map_center, zoom_start=12)
+    
+    # Add Mapbox satellite imagery
+    mapbox_token = 'pk.eyJ1IjoiZmxhc2hvcDAwNyIsImEiOiJjbHo5NzkycmIwN2RxMmtzZHZvNWpjYmQ2In0.A_FZYl5zKjwSZpJuP_MHiA'
+    folium.TileLayer(
+        tiles='https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/256/{z}/{x}/{y}?access_token=' + mapbox_token,
+        attr='Mapbox Satellite Imagery',
+        name='Satellite',
+        overlay=True,
+        control=True
+    ).add_to(m)
+    
+    # Add fullscreen control
+    plugins.Fullscreen(position='topright').add_to(m)
+
+    # Plot the points on the map
+    for idx, row in gps_data.iterrows():
+        if row['field_id'] in valid_fields:
+            color = 'blue'  # Blue for valid field points
+        else:
+            color = 'red'   # Red for travel points (noise)
+        folium.CircleMarker(
+            location=(row['lat'], row['lng']),
+            radius=2,
+            color=color,
+            fill=True,
+            fill_color=color
+        ).add_to(m)
+
+    # Conditionally display hull points if the checkbox is selected
+    if show_hull_points:
+        for field_id in valid_fields:
+            field_points = fields[fields['field_id'] == field_id][['lat', 'lng']].values
+            hull = ConvexHull(field_points)
+            hull_points = field_points[hull.vertices]
+            
+            st.write(f"Field ID {field_id} Hull Points:")
+            for point in hull_points:
+                st.write(f"Lat: {point[0]}, Lng: {point[1]}")
+            
+            folium.Polygon(
+                locations=hull_points.tolist(),
+                color='green',
+                fill=True,
+                fill_color='green',
+                fill_opacity=0.5
+            ).add_to(m)
+            
+            additional_points = generate_more_hull_points(hull_points)
+            folium.PolyLine(
+                locations=additional_points.tolist(),
+                color='yellow',
+                weight=2,
+                opacity=0.8
+            ).add_to(m)
+
+    return m, combined_df, total_area, total_time, total_travel_distance, total_travel_time
+
+# Streamlit app
 def main():
-    st.title("Real-Time Vehicle Location")
-
-    # Input for vehicle ID
+    st.title("Field Data Visualization")
+    
+    # Input for vehicle ID and date range
     vehicle = st.text_input("Enter Vehicle ID:")
+    start_date = st.date_input("Start Date", datetime.today() - timedelta(days=7))
+    end_date = st.date_input("End Date", datetime.today())
+    
+    # Toggle switch for showing or hiding hull points
+    show_hull_points = st.checkbox("Show Hull Points", value=True)
+    
+    if st.button("Fetch Data and Process"):
+        # Convert start_date and end_date to datetime.datetime objects
+        start_time = int(datetime.combine(start_date, datetime.min.time()).timestamp() * 1000)
+        end_time = int(datetime.combine(end_date, datetime.min.time()).timestamp() * 1000)
 
-    if vehicle:
-        if st.button("Track Real-Time Location"):
-            st.write("Fetching real-time location...")
+        data = fetch_data(vehicle, start_time, end_time)
 
-            while True:
-                latest_data = fetch_latest_data(vehicle)
+        if data:
+            map_obj, field_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(data, show_hull_points)
+            
+            # Display the map
+            st.components.v1.html(map_obj._repr_html_(), height=600)
 
-                if latest_data:
-                    lat = latest_data['lat']
-                    lon = latest_data['lon']
-                    timestamp = datetime.fromtimestamp(latest_data['time'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-
-                    gmap_link = get_latest_location_link(lat, lon)
-
-                    # Display the latest location and Google Maps link
-                    st.write(f"Latest Location (Lat: {lat}, Lng: {lon}) at {timestamp}")
-                    st.write(f"[Navigate to Real-Time Location]({gmap_link})")
-
-                # Wait for 15 seconds before fetching the next location
-                time.sleep(15)
-
-                # Rerun the script to update the latest location
-                st.experimental_rerun()
+            # Display the DataFrame and totals
+            st.write(field_df)
+            
+            st.write(f"\nTotal Area (Gunthas): {total_area}")
+            st.write(f"Total Time (Minutes): {total_time}")
+            st.write(f"Total Travel Distance (km): {total_travel_distance}")
+            st.write(f"Total Travel Time (minutes): {total_travel_time}")
+            
+            # Add a download button for the map
+            map_filename = f"{vehicle}_map_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.html"
+            map_obj.save(map_filename)
+            with open(map_filename, "rb") as file:
+                btn = st.download_button(
+                    label="Download Map as HTML",
+                    data=file,
+                    file_name=map_filename,
+                    mime="text/html"
+                )
+            
+            # Clean up the file after download
+            if btn:
+                os.remove(map_filename)
 
 if __name__ == "__main__":
     main()
