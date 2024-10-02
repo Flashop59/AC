@@ -10,6 +10,7 @@ from geopy.distance import geodesic
 import requests
 from datetime import datetime, timedelta
 import os
+from streamlit_folium import st_folium  # Import the necessary module for Folium map rendering
 
 # Function to fetch data from the API
 def fetch_data(vehicle, start_time, end_time):
@@ -17,19 +18,12 @@ def fetch_data(vehicle, start_time, end_time):
     url = f"https://admintestapi.ensuresystem.in/api/locationpull/orbit?vehicle={vehicle}&from={start_time}&to={end_time}"
     headers = {"token": API_KEY}
     
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching data: {e}")
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        st.error(f"Error fetching data: {response.status_code}")
         return None
 
-    try:
-        data = response.json()
-    except ValueError:
-        st.error("Error parsing JSON response.")
-        return None
-    
+    data = response.json()
     if not isinstance(data, list):
         st.error(f"Unexpected data format: {data}")
         return None
@@ -84,8 +78,7 @@ def process_data(data, show_hull_points):
     # Calculate the area for each field
     fields = gps_data[gps_data['field_id'] != -1]  # Exclude noise points
     field_areas = fields.groupby('field_id').apply(
-        lambda df: calculate_convex_hull_area(df[['lat', 'lng']].values)
-    )
+        lambda df: calculate_convex_hull_area(df[['lat', 'lng']].values))
 
     # Convert the area from square degrees to square meters (approximation)
     field_areas_m2 = field_areas * 0.77 * (111000 ** 2)  # rough approximation
@@ -205,7 +198,7 @@ def process_data(data, show_hull_points):
             hull = ConvexHull(field_points)
             hull_points = field_points[hull.vertices]
             
-            st.write(f"**Field ID {field_id} Hull Points:**")
+            st.write(f"Field ID {field_id} Hull Points:")
             for point in hull_points:
                 st.write(f"Lat: {point[0]}, Lng: {point[1]}")
             
@@ -227,148 +220,81 @@ def process_data(data, show_hull_points):
 
     return m, combined_df, total_area, total_time, total_travel_distance, total_travel_time
 
-# Function to get the latest location from data
+# Function to get the latest machine location
 def get_latest_location(data):
     if not data:
-        return None
-    latest_data = data[-1]
-    latest_location = (latest_data['lat'], latest_data['lon'])
-    timestamp = pd.to_datetime(latest_data['time'], unit='ms')
-    return latest_location, timestamp
-
-# Function to create a map for the latest location
-def create_latest_location_map(latest_location):
-    m = folium.Map(location=latest_location, zoom_start=15)
-    folium.Marker(
-        location=latest_location,
-        popup="Latest Location",
-        icon=folium.Icon(color='red', icon='info-sign')
-    ).add_to(m)
-    return m
+        return None, None
+    latest_point = data[-1]
+    lat, lon = latest_point['lat'], latest_point['lon']
+    return lat, lon
 
 # Streamlit app
 def main():
-    st.set_page_config(page_title="Field and Location Data Visualization", layout="wide")
-    st.title("Field and Location Data Visualization")
+    st.title("Field Data Visualization")
     
-    # Create tabs
-    tabs = st.tabs(["Field Data Visualization", "Latest Location"])
+    # Input for vehicle ID and date range
+    vehicle = st.text_input("Enter Vehicle ID:")
+    start_date = st.date_input("Start Date", datetime.today() - timedelta(days=7))
+    end_date = st.date_input("End Date", datetime.today())
     
-    with tabs[0]:
-        st.header("Field Data Visualization")
-        
-        # Input for vehicle ID and date range
-        vehicle = st.text_input("Enter Vehicle ID:")
-        start_date = st.date_input("Start Date", datetime.today() - timedelta(days=7))
-        end_date = st.date_input("End Date", datetime.today())
-        
-        # Toggle switch for showing or hiding hull points
-        show_hull_points = st.checkbox("Show Hull Points", value=True)
-        
-        if st.button("Fetch Data and Process"):
-            if not vehicle:
-                st.error("Please enter a Vehicle ID.")
-            elif start_date > end_date:
-                st.error("Start Date must be before End Date.")
-            else:
-                # Convert start_date and end_date to datetime.datetime objects in milliseconds
-                start_time = int(datetime.combine(start_date, datetime.min.time()).timestamp() * 1000)
-                end_time = int(datetime.combine(end_date, datetime.min.time()).timestamp() * 1000)
-
-                with st.spinner("Fetching data..."):
-                    data = fetch_data(vehicle, start_time, end_time)
-
-                if data:
-                    with st.spinner("Processing data..."):
-                        map_obj, field_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(data, show_hull_points)
-                    
-                    # Display the map
-                    st.subheader("Field Map")
-                    folium_static(map_obj, width=700, height=500)
-
-                    # Display the DataFrame and totals
-                    st.subheader("Field Metrics")
-                    st.dataframe(field_df.style.format({
-                        'Area (Gunthas)': "{:.2f}",
-                        'Time (Minutes)': "{:.2f}",
-                        'Travel Distance to Next Field (km)': "{:.2f}",
-                        'Travel Time to Next Field (minutes)': "{:.2f}"
-                    }))
-
-                    st.markdown(f"**Total Area (Gunthas):** {total_area:.2f}")
-                    st.markdown(f"**Total Time (Minutes):** {total_time:.2f}")
-                    st.markdown(f"**Total Travel Distance (km):** {total_travel_distance:.2f}")
-                    st.markdown(f"**Total Travel Time (minutes):** {total_travel_time:.2f}")
-                    
-                    # Add a download button for the map
-                    map_filename = f"{vehicle}_map_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.html"
-                    map_obj.save(map_filename)
-                    with open(map_filename, "rb") as file:
-                        btn = st.download_button(
-                            label="Download Map as HTML",
-                            data=file,
-                            file_name=map_filename,
-                            mime="text/html"
-                        )
-                    
-                    # Clean up the file after download
-                    if btn:
-                        os.remove(map_filename)
+    # Toggle switch for showing or hiding hull points
+    show_hull_points = st.checkbox("Show Hull Points", value=True)
     
-    with tabs[1]:
-        st.header("Latest Location")
-        
-        # Input for vehicle ID and date range
-        vehicle_latest = st.text_input("Enter Vehicle ID for Latest Location:", key="latest")
-        latest_start_date = st.date_input("Start Date", datetime.today() - timedelta(days=1), key="latest_start")
-        latest_end_date = st.date_input("End Date", datetime.today(), key="latest_end")
-        
-        if st.button("Fetch Latest Location and Navigate", key="latest_button"):
-            if not vehicle_latest:
-                st.error("Please enter a Vehicle ID.")
-            elif latest_start_date > latest_end_date:
-                st.error("Start Date must be before End Date.")
-            else:
-                # Convert start_date and end_date to datetime.datetime objects in milliseconds
-                latest_start_time = int(datetime.combine(latest_start_date, datetime.min.time()).timestamp() * 1000)
-                latest_end_time = int(datetime.combine(latest_end_date, datetime.min.time()).timestamp() * 1000)
+    if st.button("Fetch Data and Process"):
+        # Convert start_date and end_date to datetime.datetime objects
+        start_time = int(datetime.combine(start_date, datetime.min.time()).timestamp() * 1000)
+        end_time = int(datetime.combine(end_date, datetime.min.time()).timestamp() * 1000)
 
-                with st.spinner("Fetching latest location data..."):
-                    latest_data = fetch_data(vehicle_latest, latest_start_time, latest_end_time)
+        data = fetch_data(vehicle, start_time, end_time)
 
-                if latest_data:
-                    latest_info = get_latest_location(latest_data)
-                    if latest_info:
-                        latest_location, latest_timestamp = latest_info
-                        with st.spinner("Creating map..."):
-                            latest_map = create_latest_location_map(latest_location)
-                        
-                        # Display the latest location map
-                        st.subheader("Latest Location Map")
-                        folium_static(latest_map, width=700, height=500)
+        if data:
+            # Tabbed view
+            tab1, tab2 = st.tabs(["Field Visualization", "Latest Location"])
+            
+            # First Tab: Field Visualization
+            with tab1:
+                map_obj, field_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(data, show_hull_points)
+                
+                # Display the map
+                st_folium(map_obj, width=700, height=500)
 
-                        st.markdown(f"**Latest Timestamp:** {latest_timestamp}")
-
-                        # Input for origin address
-                        st.subheader("Get Directions to Latest Location")
-                        origin = st.text_input("Enter Origin Address (for directions):")
-
-                        if origin:
-                            # Generate Google Maps directions link
-                            origin_encoded = requests.utils.quote(origin)
-                            destination_encoded = f"{latest_location[0]},{latest_location[1]}"
-                            google_maps_url = f"https://www.google.com/maps/dir/?api=1&origin={origin_encoded}&destination={destination_encoded}&travelmode=driving"
-
-                            st.markdown(f"[Click here for directions on Google Maps]({google_maps_url})")
-                    else:
-                        st.error("No location data available.")
+                # Display the DataFrame and totals
+                st.write(field_df)
+                
+                st.write(f"\nTotal Area (Gunthas): {total_area}")
+                st.write(f"Total Time (Minutes): {total_time}")
+                st.write(f"Total Travel Distance (km): {total_travel_distance}")
+                st.write(f"Total Travel Time (minutes): {total_travel_time}")
+                
+                # Add a download button for the map
+                map_filename = f"{vehicle}_map_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.html"
+                map_obj.save(map_filename)
+                with open(map_filename, "rb") as file:
+                    btn = st.download_button(
+                        label="Download Map as HTML",
+                        data=file,
+                        file_name=map_filename,
+                        mime="text/html"
+                    )
+                
+                # Clean up the file after download
+                if btn:
+                    os.remove(map_filename)
+            
+            # Second Tab: Latest Location
+            with tab2:
+                latest_lat, latest_lon = get_latest_location(data)
+                if latest_lat is not None and latest_lon is not None:
+                    # Display map with the latest location
+                    latest_map = folium.Map(location=[latest_lat, latest_lon], zoom_start=15)
+                    folium.Marker([latest_lat, latest_lon], popup="Latest Location", icon=folium.Icon(color="blue")).add_to(latest_map)
+                    st_folium(latest_map, width=700, height=500)
+                    
+                    # Display navigation link using Google Maps
+                    navigation_url = f"https://www.google.com/maps/dir/?api=1&destination={latest_lat},{latest_lon}"
+                    st.write(f"[Navigate to Latest Location](https://www.google.com/maps/dir/?api=1&destination={latest_lat},{latest_lon})")
                 else:
-                    st.error("No data fetched for the given parameters.")
-
-# Helper function to display Folium maps in Streamlit
-def folium_static(m, width=700, height=500):
-    from streamlit_folium import st_folium
-    st_folium(m, width=width, height=height)
-
+                    st.write("No latest location available.")
+                    
 if __name__ == "__main__":
     main()
