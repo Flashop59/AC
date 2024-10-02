@@ -59,7 +59,7 @@ def generate_more_hull_points(points, num_splits=3):
     return np.array(new_points)
 
 # Function to process the fetched data and return the map and field areas
-def process_data(data):
+def process_data(data, show_hull_points):
     # Create a DataFrame from the fetched data
     gps_data = pd.DataFrame(data)
     gps_data['Timestamp'] = pd.to_datetime(gps_data['time'], unit='ms')
@@ -190,31 +190,32 @@ def process_data(data):
             fill_color=color
         ).add_to(m)
 
-    # Plot convex hulls for each valid field and display hull points in yellow
-    for field_id in valid_fields:
-        field_points = fields[fields['field_id'] == field_id][['lat', 'lng']].values
-        hull = ConvexHull(field_points)
-        hull_points = field_points[hull.vertices]
-        
-        st.write(f"Field ID {field_id} Hull Points:")
-        for point in hull_points:
-            st.write(f"Lat: {point[0]}, Lng: {point[1]}")
-        
-        folium.Polygon(
-            locations=hull_points.tolist(),
-            color='green',
-            fill=True,
-            fill_color='green',
-            fill_opacity=0.5
-        ).add_to(m)
-        
-        additional_points = generate_more_hull_points(hull_points)
-        folium.PolyLine(
-            locations=additional_points.tolist(),
-            color='yellow',
-            weight=2,
-            opacity=0.8
-        ).add_to(m)
+    # Conditionally display hull points if the checkbox is selected
+    if show_hull_points:
+        for field_id in valid_fields:
+            field_points = fields[fields['field_id'] == field_id][['lat', 'lng']].values
+            hull = ConvexHull(field_points)
+            hull_points = field_points[hull.vertices]
+            
+            st.write(f"Field ID {field_id} Hull Points:")
+            for point in hull_points:
+                st.write(f"Lat: {point[0]}, Lng: {point[1]}")
+            
+            folium.Polygon(
+                locations=hull_points.tolist(),
+                color='green',
+                fill=True,
+                fill_color='green',
+                fill_opacity=0.5
+            ).add_to(m)
+            
+            additional_points = generate_more_hull_points(hull_points)
+            folium.PolyLine(
+                locations=additional_points.tolist(),
+                color='yellow',
+                weight=2,
+                opacity=0.8
+            ).add_to(m)
 
     return m, combined_df, total_area, total_time, total_travel_distance, total_travel_time
 
@@ -227,6 +228,9 @@ def main():
     start_date = st.date_input("Start Date", datetime.today() - timedelta(days=7))
     end_date = st.date_input("End Date", datetime.today())
     
+    # Toggle switch for showing or hiding hull points
+    show_hull_points = st.checkbox("Show Hull Points", value=True)
+    
     if st.button("Fetch Data and Process"):
         # Convert start_date and end_date to datetime.datetime objects
         start_time = int(datetime.combine(start_date, datetime.min.time()).timestamp() * 1000)
@@ -235,7 +239,7 @@ def main():
         data = fetch_data(vehicle, start_time, end_time)
 
         if data:
-            map_obj, field_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(data)
+            map_obj, field_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(data, show_hull_points)
             
             # Display the map
             st.components.v1.html(map_obj._repr_html_(), height=600)
