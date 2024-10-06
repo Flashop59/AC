@@ -223,26 +223,36 @@ def process_data(data, show_hull_points):
 def main():
     st.title("Field Data Visualization")
     
+    # Initialize session state for start and end times if not already present
+    if 'start_time' not in st.session_state:
+        st.session_state['start_time'] = datetime.now().time()
+    if 'end_time' not in st.session_state:
+        st.session_state['end_time'] = datetime.now().time()
+    
     # Input for vehicle ID
     vehicle = st.text_input("Enter Vehicle ID:")
 
     # Date and time inputs for start and end date
     start_date = st.date_input("Start Date", datetime.today() - timedelta(days=7))
-    start_time_input = st.time_input("Start Time", datetime.now().time())  # Add time input for start
+    start_time_input = st.time_input("Start Time", st.session_state['start_time'])  # Add time input for start
 
     end_date = st.date_input("End Date", datetime.today())
-    end_time_input = st.time_input("End Time", datetime.now().time())  # Add time input for end
+    end_time_input = st.time_input("End Time", st.session_state['end_time'])  # Add time input for end
+
+    # Store time input values in session state
+    st.session_state['start_time'] = start_time_input
+    st.session_state['end_time'] = end_time_input
 
     # Toggle switch for showing or hiding hull points
     show_hull_points = st.checkbox("Show Hull Points", value=True)
     
     if st.button("Fetch Data and Process"):
         # Combine start date and time, and convert to timestamp in milliseconds
-        start_datetime = datetime.combine(start_date, start_time_input)
+        start_datetime = datetime.combine(start_date, st.session_state['start_time'])
         start_timestamp = int(start_datetime.timestamp() * 1000)
         
         # Combine end date and time, and convert to timestamp in milliseconds
-        end_datetime = datetime.combine(end_date, end_time_input)
+        end_datetime = datetime.combine(end_date, st.session_state['end_time'])
         end_timestamp = int(end_datetime.timestamp() * 1000)
 
         # Fetch data using the API with the new timestamp
