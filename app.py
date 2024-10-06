@@ -223,20 +223,30 @@ def process_data(data, show_hull_points):
 def main():
     st.title("Field Data Visualization")
     
-    # Input for vehicle ID and date range
+    # Input for vehicle ID
     vehicle = st.text_input("Enter Vehicle ID:")
+
+    # Date and time inputs for start and end date
     start_date = st.date_input("Start Date", datetime.today() - timedelta(days=7))
+    start_time_input = st.time_input("Start Time", datetime.now().time())  # Add time input for start
+
     end_date = st.date_input("End Date", datetime.today())
-    
+    end_time_input = st.time_input("End Time", datetime.now().time())  # Add time input for end
+
     # Toggle switch for showing or hiding hull points
     show_hull_points = st.checkbox("Show Hull Points", value=True)
     
     if st.button("Fetch Data and Process"):
-        # Convert start_date and end_date to datetime.datetime objects
-        start_time = int(datetime.combine(start_date, datetime.min.time()).timestamp() * 1000)
-        end_time = int(datetime.combine(end_date, datetime.min.time()).timestamp() * 1000)
+        # Combine start date and time, and convert to timestamp in milliseconds
+        start_datetime = datetime.combine(start_date, start_time_input)
+        start_timestamp = int(start_datetime.timestamp() * 1000)
+        
+        # Combine end date and time, and convert to timestamp in milliseconds
+        end_datetime = datetime.combine(end_date, end_time_input)
+        end_timestamp = int(end_datetime.timestamp() * 1000)
 
-        data = fetch_data(vehicle, start_time, end_time)
+        # Fetch data using the API with the new timestamp
+        data = fetch_data(vehicle, start_timestamp, end_timestamp)
 
         if data:
             map_obj, field_df, total_area, total_time, total_travel_distance, total_travel_time = process_data(data, show_hull_points)
